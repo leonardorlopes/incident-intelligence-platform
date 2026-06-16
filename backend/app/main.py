@@ -1,12 +1,29 @@
+import os
+import uuid
+import json
+import glob
+from typing import List, Dict, Any, Optional
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
-import uuid
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+# Load environment variables
+load_dotenv()
+
+def get_model():
+    api_key = os.getenv("GEMINI_API_KEY")
+    if api_key:
+        genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        return genai.GenerativeModel(model_name)
+    return None
 
 app = FastAPI(
     title="Incident Intelligence Platform API",
     description="Multi-agent orchestration for autonomous incident resolution.",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # --- Models ---
@@ -28,75 +45,109 @@ class IncidentResponse(BaseModel):
     status: str
     analysis: AnalysisSuggestion
 
-# --- Service Layer (Simulated Agent Logic) ---
+# --- RAG Utility (Knowledge Retrieval) ---
+
+class KnowledgeService:
+    @staticmethod
+    def get_context_from_runbooks(query: str) -> str:
+        """Simple RAG implementation: find runbooks that match keywords in the query."""
+        runbook_dir = os.path.join(os.path.dirname(__file__), "../../runbooks/*.md")
+        runbooks = glob.glob(runbook_dir)
+        
+        context_parts = []
+        referenced = []
+        
+        # In a production RAG, we would use vector embeddings. 
+        # Here we use a keyword-based retrieval for simplicity and speed.
+        query_words = set(query.lower().split())
+        
+        for rb_path in runbooks:
+            filename = os.path.basename(rb_path)
+            # Check if filename keywords are in the query
+            name_keywords = set(filename.replace(".md", "").replace("-", " ").lower().split())
+            
+            if query_words.intersection(name_keywords):
+                with open(rb_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    context_parts.append(f"--- Runbook: {filename} ---\n{content}")
+                    referenced.append(filename)
+        
+        return "\n\n".join(context_parts), referenced
+
+# --- AI Service Layer ---
 
 class IncidentAnalysisService:
     @staticmethod
     async def analyze(request: IncidentRequest) -> AnalysisSuggestion:
-        desc = request.description.lower()
-        
-        # Simple heuristic-based "intelligence" to simulate RAG/Agent behavior
-        # In a real scenario, this would trigger the LangGraph agents
-        if "lag" in desc or "kafka" in desc:
+        model = get_model()
+        if not model:
+            # Fallback for when API Key is missing
             return AnalysisSuggestion(
-                root_cause_hypothesis="Potential Kafka partition imbalance or consumer bottleneck.",
-                suggested_actions=[
-                    "Check consumer group lag metrics.",
-                    "Verify partition key distribution.",
-                    "Scale out consumer instances if CPU is high."
-                ],
-                confidence=0.92,
-                referenced_runbooks=["kafka-consumer-lag.md"]
-            )
-        elif "latency" in desc or "slow" in desc:
-            return AnalysisSuggestion(
-                root_cause_hypothesis="High P99 latency detected in downstream services or database contention.",
-                suggested_actions=[
-                    "Analyze database lock wait times.",
-                    "Verify circuit breaker status for downstream dependencies.",
-                    "Check for resource saturation on the API nodes."
-                ],
-                confidence=0.85,
-                referenced_runbooks=["high-api-latency.md", "database-lock-contention.md"]
-            )
-        elif "down" in desc or "503" in desc or "ecs" in desc:
-            return AnalysisSuggestion(
-                root_cause_hypothesis="ECS Service unavailability due to task failure or failing health checks.",
-                suggested_actions=[
-                    "Check ECS task stopped reason.",
-                    "Review application startup logs in CloudWatch.",
-                    "Verify security group and ALB configuration."
-                ],
-                confidence=0.88,
-                referenced_runbooks=["ecs-service-down.md"]
-            )
-        else:
-            return AnalysisSuggestion(
-                root_cause_hypothesis="Unknown incident pattern. Manual triage recommended.",
-                suggested_actions=["Collect more logs", "Escalate to on-call engineer"],
-                confidence=0.5,
+                root_cause_hypothesis="Gemini API Key not configured. Analysis is unavailable.",
+                suggested_actions=["Configure GEMINI_API_KEY in .env file"],
+                confidence=0.0,
                 referenced_runbooks=[]
             )
+
+        # 1. Retrieve Context (RAG)
+        context, referenced = KnowledgeService.get_context_from_runbooks(request.description)
+        
+        # 2. Construct Prompt
+        prompt = f"""
+        You are an expert Site Reliability Engineer (SRE).
+        Analyze the following incident and provide a structured response in JSON format.
+        
+        Incident Description: {request.description}
+        Metadata: {json.dumps(request.metadata)}
+        
+        Use the following internal runbooks as context if relevant:
+        {context if context else "No specific runbooks found for this query."}
+        
+        Your response must be a valid JSON object with these keys:
+        - root_cause_hypothesis: A clear, concise technical theory.
+        - suggested_actions: A list of specific, actionable steps.
+        - confidence: A number between 0 and 1 representing your certainty.
+        
+        Ensure the JSON is well-formatted.
+        """
+
+        try:
+            # 3. Call Gemini
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    response_mime_type="application/json"
+                )
+            )
+            
+            # 4. Parse Response
+            analysis_data = json.loads(response.text)
+            
+            return AnalysisSuggestion(
+                root_cause_hypothesis=analysis_data.get("root_cause_hypothesis", "Unable to determine"),
+                suggested_actions=analysis_data.get("suggested_actions", []),
+                confidence=float(analysis_data.get("confidence", 0.5)),
+                referenced_runbooks=referenced
+            )
+        except Exception as e:
+            print(f"AI Analysis Error: {e}")
+            raise HTTPException(status_code=500, detail="AI Analysis failed to process the request.")
 
 # --- Endpoints ---
 
 @app.get("/")
 async def root():
-    return {"status": "online", "platform": "Incident Intelligence"}
+    return {"status": "online", "platform": "Incident Intelligence (AI-Powered)"}
 
 @app.post("/analyze", response_model=IncidentResponse)
 async def analyze_incident(request: IncidentRequest):
     incident_id = request.id or str(uuid.uuid4())
-    
-    try:
-        analysis = await IncidentAnalysisService.analyze(request)
-        return IncidentResponse(
-            incident_id=incident_id,
-            status="analyzed",
-            analysis=analysis
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    analysis = await IncidentAnalysisService.analyze(request)
+    return IncidentResponse(
+        incident_id=incident_id,
+        status="analyzed",
+        analysis=analysis
+    )
 
 if __name__ == "__main__":
     import uvicorn
