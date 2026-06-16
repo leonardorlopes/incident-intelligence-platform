@@ -29,6 +29,8 @@ jobs:
         pip install pytest httpx
 
     - name: Run Integration Tests
+      env:
+        GEMINI_API_KEY: "dummy_key_for_mocked_tests"
       run: |
         export PYTHONPATH=.
         pytest tests/test_api.py

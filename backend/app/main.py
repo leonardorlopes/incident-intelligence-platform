@@ -12,14 +12,13 @@ import google.generativeai as genai
 # Load environment variables
 load_dotenv()
 
-# Configure Gemini
-api_key = os.getenv("GEMINI_API_KEY")
-if api_key:
-    genai.configure(api_key=api_key)
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-    model = genai.GenerativeModel(model_name)
-else:
-    model = None
+def get_model():
+    api_key = os.getenv("GEMINI_API_KEY")
+    if api_key:
+        genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        return genai.GenerativeModel(model_name)
+    return None
 
 app = FastAPI(
     title="Incident Intelligence Platform API",
@@ -80,6 +79,7 @@ class KnowledgeService:
 class IncidentAnalysisService:
     @staticmethod
     async def analyze(request: IncidentRequest) -> AnalysisSuggestion:
+        model = get_model()
         if not model:
             # Fallback for when API Key is missing
             return AnalysisSuggestion(
