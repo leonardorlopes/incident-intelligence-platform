@@ -1,6 +1,12 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
+import sys
+import os
+
+# Adiciona o diretório pai (backend) ao sys.path para evitar ModuleNotFoundError
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from app.main import app
 
 client = TestClient(app)
