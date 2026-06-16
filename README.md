@@ -29,6 +29,19 @@ We focus on high-density context windows. By fetching only the most relevant met
 - **Integrations**: Designed for future MCP (Model Context Protocol) support to connect with ServiceNow, Jira, and Datadog.
 - **Deployment**: Terraform-managed AWS ECS infrastructure with Dockerized containers.
 
+## Getting Started
+
+### Backend & API
+The backend is built with FastAPI and provides an intelligent `/analyze` endpoint.
+- **Location:** `backend/`
+- **Setup:** `pip install -r backend/requirements.txt`
+- **Execution:** `python backend/app/main.py`
+
+### Testing
+We use integrated tests to ensure the analysis engine correctly identifies incident patterns.
+- **Instructions:** See [backend/TESTING.md](backend/TESTING.md)
+- **Command:** `pytest backend/tests/test_api.py`
+
 ## Future Roadmap
 - **Q3 2026**: Direct bidirectional integration with ServiceNow and Slack.
 - **Q4 2026**: Automated remediation (self-healing) using agent-driven scripts.
